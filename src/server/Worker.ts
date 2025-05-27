@@ -5,10 +5,17 @@ import ipAnonymize from "ip-anonymize";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocket, WebSocketServer } from "ws";
+import { z } from "zod/v4";
 import { GameEnv } from "../core/configuration/Config";
 import { getServerConfigFromServer } from "../core/configuration/ConfigLoader";
 import { GameType } from "../core/game/Game";
-import { ClientMessageSchema, GameConfig, GameRecord } from "../core/Schemas";
+import {
+  ClientMessageSchema,
+  GameConfig,
+  GameConfigSchema,
+  GameRecord,
+  GameRecordSchema,
+} from "../core/Schemas";
 import { archive, readGameRecord } from "./Archive";
 import { Client } from "./Client";
 import { GameManager } from "./GameManager";
@@ -83,6 +90,7 @@ export function startWorker() {
         return res.status(400).json({ error: "Game ID is required" });
       }
       const clientIP = req.ip || req.socket.remoteAddress || "unknown";
+      // TODO: Validate this with zod
       const gc = req.body?.gameConfig as GameConfig;
       if (
         gc?.gameType === GameType.Public &&
@@ -138,9 +146,15 @@ export function startWorker() {
   app.put(
     "/api/game/:id",
     gatekeeper.httpHandler(LimiterType.Put, async (req, res) => {
+      const result = GameConfigSchema.partial().safeParse(req.body);
+      if (!result.success) {
+        const error = z.prettifyError(result.error);
+        return res.status(400).json({ error });
+      }
+      const config = result.data;
       // TODO: only update public game if from local host
       const lobbyID = req.params.id;
-      if (req.body.gameType === GameType.Public) {
+      if (config.gameType === GameType.Public) {
         log.info(`cannot update game ${lobbyID} to public`);
         return res.status(400).json({ error: "Cannot update public game" });
       }
@@ -161,18 +175,7 @@ export function startWorker() {
           .status(400)
           .json({ error: "Cannot update game after it has started" });
       }
-      game.updateGameConfig({
-        gameMap: req.body.gameMap,
-        difficulty: req.body.difficulty,
-        infiniteGold: req.body.infiniteGold,
-        infiniteTroops: req.body.infiniteTroops,
-        instantBuild: req.body.instantBuild,
-        bots: req.body.bots,
-        disableNPCs: req.body.disableNPCs,
-        disabledUnits: req.body.disabledUnits,
-        gameMode: req.body.gameMode,
-        playerTeams: req.body.playerTeams,
-      });
+      game.updateGameConfig(config);
       res.status(200).json({ success: true });
     }),
   );
@@ -241,7 +244,13 @@ export function startWorker() {
   app.post(
     "/api/archive_singleplayer_game",
     gatekeeper.httpHandler(LimiterType.Post, async (req, res) => {
-      const gameRecord: GameRecord = req.body;
+      const result = GameRecordSchema.safeParse(req.body);
+      if (!result.success) {
+        const error = z.prettifyError(result.error);
+        return res.status(400).json({ error });
+      }
+
+      const gameRecord: GameRecord = result.data;
 
       if (!gameRecord) {
         log.info("game record not found in request");
